@@ -1,0 +1,100 @@
+---
+title: "Bias Correction"
+author: "Kenny Quintana"
+format: html
+editor: visual
+---
+
+## Streamgage Data
+
+```{r}
+#| include: FALSE
+
+library(tidyverse)
+
+```
+
+
+```{r}
+#| label: Streamgage Data
+#| echo: FALSE
+
+usgs.path <- "./yakima.txt"
+
+usgs <- read.table(usgs.path, sep = "\t", header = FALSE) |> 
+  select(V3,V4) |> 
+  slice(3:n()) |> 
+  rename(Date=V3, `Flow (cfs)`=V4) |>
+  separate(Date, into=c("Year", "Month", "Day"), sep = "-")  |>
+  mutate(`Flow (cms)` = as.numeric(`Flow (cfs)`) / 35.315) |>
+  mutate(Month=as.numeric(Month)) |> 
+  mutate(Month=factor(Month)) |> 
+  drop_na() |> 
+  mutate(Date = as.Date(paste(Year, Month, Day, sep = "-")), "%Y-%m-%d")
+
+monthly.usgs <- usgs |> 
+  group_by(Month) |> 
+  group_split()
+  
+```
+
+```{r}
+#| label: Simulation Data
+#| echo: FALSE
+
+geoglows <- read_csv('./retrospective_720237537.csv') |> 
+  rename(`Flow (cms)`=`720237537`) |>
+  separate(time, into=c("Year", "Month", "Day"), sep = "-") |> 
+  mutate(Month=as.numeric(Month)) |> 
+  mutate(Month=factor(Month)) |> 
+  drop_na()
+
+monthly.geoglows <- geoglows |> 
+  group_by(Month) |> 
+  group_split()
+
+```
+
+```{r}
+
+bias.correction <- data.frame()
+
+for (i in 1:(length(monthly.usgs))) {
+  usgs.month <- monthly.usgs[[i]] |> 
+    arrange(desc(`Flow (cms)`)) |> 
+    mutate(rank = 1:n()) |> 
+    mutate(EP = round(rank/n() * 100,1)) |> 
+    rename(`Bias Corrected Flow (cms)`=`Flow (cms)`)
+  
+  geoglows.month <- monthly.geoglows[[i]] |> 
+    arrange(desc(`Flow (cms)`)) |> 
+    mutate(rank = 1:n()) |> 
+    mutate(EP = round(rank/n() * 100,1))
+  
+  monthly.bias <- left_join(geoglows.month, usgs.month, by='EP')
+  bias.correction <- bias.correction |> 
+    rbind(monthly.bias)
+}
+
+bias.correction <- bias.correction |> 
+  select(`Year.x`, `Month.x`, Day.x, `Flow (cms)`, `Bias Corrected Flow (cms)`) |> 
+  rename(Year=Year.x, Month=Month.x, Day=Day.x) |> 
+  arrange(Year, Month, Day) |> 
+  mutate(Date = as.Date(paste(Year, Month, Day, sep = "-")), "%Y-%m-%d")
+
+ggplot(bias.correction) +
+  # geom_line(aes(x=Date, y=`Flow (cms)`), color='orange') +
+  geom_line(aes(x=Date, y=`Bias Corrected Flow (cms)`), color='blue') +
+  #geom_line(data=usgs, aes(x=Date, y=`Flow (cms)`), color='green') +
+  scale_x_date(limits = as.Date(c("1940-01-01", "2024-12-31")),
+               date_breaks = "10 years", date_labels = "%Y")
+
+ggplot(bias.correction) +
+  geom_line(aes(x=Date, y=`Flow (cms)`), color='orange') +
+  geom_line(data=usgs, aes(x=Date, y=`Flow (cms)`), color='green') +
+  scale_x_date(limits = as.Date(c("1940-01-01", "2024-12-31")),
+               date_breaks = "10 years", date_labels = "%Y")
+
+```
+
+
