@@ -7,17 +7,16 @@ editor: visual
 
 ## Streamgage Data
 
-```{r}
-#| include: FALSE
+```{r Import Libraries, include=FALSE}
 
 library(tidyverse)
+library(fuzzyjoin)
+library(tibble)
+library(knitr)
 
 ```
 
-
-```{r}
-#| label: Streamgage Data
-#| echo: FALSE
+```{r Streamgage Data, echo=FALSE}
 
 usgs.path <- "./yakima.txt"
 
@@ -25,12 +24,10 @@ usgs <- read.table(usgs.path, sep = "\t", header = FALSE) |>
   select(V3,V4) |> 
   slice(3:n()) |> 
   rename(Date=V3, `Flow (cfs)`=V4) |>
-  separate(Date, into=c("Year", "Month", "Day"), sep = "-")  |>
+  mutate(Date=as.Date(Date), Year = year(Date), Month = month(Date), Day = day(Date)) |> 
   mutate(`Flow (cms)` = as.numeric(`Flow (cfs)`) / 35.315) |>
-  mutate(Month=as.numeric(Month)) |> 
   mutate(Month=factor(Month)) |> 
-  drop_na() |> 
-  mutate(Date = as.Date(paste(Year, Month, Day, sep = "-")), "%Y-%m-%d")
+  drop_na()
 
 monthly.usgs <- usgs |> 
   group_by(Month) |> 
@@ -38,65 +35,109 @@ monthly.usgs <- usgs |>
   
 ```
 
-```{r}
-#| label: Simulation Data
-#| echo: FALSE
+```{r Simulation Data, echo=FALSE}
 
-geoglows <- read_csv('./retrospective_720237537.csv') |> 
-  rename(`Flow (cms)`=`720237537`) |>
-  separate(time, into=c("Year", "Month", "Day"), sep = "-") |> 
-  mutate(Month=as.numeric(Month)) |> 
-  mutate(Month=factor(Month)) |> 
-  drop_na()
-
-monthly.geoglows <- geoglows |> 
+monthly.geoglows <- read_csv('./retrospective_720237537.csv') |> 
+  rename(`Flow (cms)`=`720237537`) |> 
+  mutate(Date=as.Date(time)) |>
+  separate(time, into=c("Year", "Month", "Day"), sep = "-") |>
+  mutate(Month=as.numeric(Month)) |>
+  mutate(Month=factor(Month)) |>
+  drop_na() |> 
   group_by(Month) |> 
   group_split()
 
 ```
 
-```{r}
+```{r Bias Correction, echo=FALSE}
 
 bias.correction <- data.frame()
+usgs.fdc <- data.frame()
+geoglows.fdc <- data.frame()
 
 for (i in 1:(length(monthly.usgs))) {
   usgs.month <- monthly.usgs[[i]] |> 
     arrange(desc(`Flow (cms)`)) |> 
     mutate(rank = 1:n()) |> 
-    mutate(EP = round(rank/n() * 100,1)) |> 
+    mutate(EP = round(rank/n() * 100,2)) |> 
     rename(`Bias Corrected Flow (cms)`=`Flow (cms)`)
+  usgs.fdc <- usgs.fdc |> 
+    rbind(usgs.month |> 
+    rename(`Flow (cms)`=`Bias Corrected Flow (cms)`)) |> 
+    mutate(Date=as.Date(Date))
   
   geoglows.month <- monthly.geoglows[[i]] |> 
     arrange(desc(`Flow (cms)`)) |> 
     mutate(rank = 1:n()) |> 
-    mutate(EP = round(rank/n() * 100,1))
+    mutate(EP = round(rank/n() * 100,2))
+  geoglows.fdc <- geoglows.fdc |> 
+    rbind(geoglows.month) |> 
+    mutate(Date=as.Date(Date))
   
-  monthly.bias <- left_join(geoglows.month, usgs.month, by='EP')
+  monthly.bias <- difference_left_join(geoglows.month, usgs.month, by='EP', max_dist=0.03)
   bias.correction <- bias.correction |> 
     rbind(monthly.bias)
 }
 
-bias.correction <- bias.correction |> 
-  select(`Year.x`, `Month.x`, Day.x, `Flow (cms)`, `Bias Corrected Flow (cms)`) |> 
-  rename(Year=Year.x, Month=Month.x, Day=Day.x) |> 
-  arrange(Year, Month, Day) |> 
-  mutate(Date = as.Date(paste(Year, Month, Day, sep = "-")), "%Y-%m-%d")
 
-ggplot(bias.correction) +
-  # geom_line(aes(x=Date, y=`Flow (cms)`), color='orange') +
-  geom_line(aes(x=Date, y=`Bias Corrected Flow (cms)`), color='blue') +
-  #geom_line(data=usgs, aes(x=Date, y=`Flow (cms)`), color='green') +
-  scale_x_date(limits = as.Date(c("1940-01-01", "2024-12-31")),
-               date_breaks = "10 years", date_labels = "%Y")
 
-ggplot(bias.correction) +
-  geom_line(aes(x=Date, y=`Flow (cms)`), color='orange') +
-  geom_line(data=usgs, aes(x=Date, y=`Flow (cms)`), color='green') +
-  scale_x_date(limits = as.Date(c("1940-01-01", "2024-12-31")),
-               date_breaks = "10 years", date_labels = "%Y")
+bias.correction <- bias.correction |>
+  select(`Date.x`, `Year.x`, `Month.x`, Day.x, `Flow (cms)`, `Bias Corrected Flow (cms)`) |>
+  rename(Date=Date.x, Year=Year.x, Month=Month.x, Day=Day.x) |>
+  arrange(Date)
+
+ggplot() +
+  geom_line(data = bias.correction, aes(x = Date, y = `Flow (cms)`, color = "Flow (cms)")) +
+  geom_line(data = bias.correction, aes(x = Date, y = `Bias Corrected Flow (cms)`, color = "Bias Corrected Flow (cms)")) +
+  geom_line(data = usgs, aes(x = Date, y = `Flow (cms)`, color = "USGS Flow (cms)")) +
+  coord_cartesian(ylim = c(0, 800)) +
+  scale_x_date(limits = as.Date(c("2000-01-01", "2003-12-31")),
+               date_breaks = "1 years", date_labels = "%m-%Y") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(color = "Source")
+
+ggplot() +
+  geom_line(data = usgs.fdc, aes(x = EP, y = `Flow (cms)`, color = "USGS")) +
+  geom_line(data = geoglows.fdc, aes(x = EP, y = `Flow (cms)`, color = "GeoGLOWS")) +
+  facet_wrap(~ Month, scales = 'free_y') +
+  labs(x = "Exceedance Probability (%)", y = "Flow (cms)", title = "Faceted Plot with Two Lines", color = "Source") +
+  scale_color_manual(values = c("USGS" = "green", "GeoGLOWS" = "blue"))
 
 ```
 
-hint:   git config pull.rebase false  # merge
-hint:   git config pull.rebase true   # rebase
-hint:   git config pull.ff only       # fast-forward only
+```{r Adjust Forecast}
+
+forecast <- read_csv('./forecast_720237537.csv') |>  difference_left_join(forecast, bias.correction, by='EP', max_dist=0.03)
+  
+
+
+
+ggplot(forecast) +
+  geom_line(aes(x=datetime, y=flow_median))
+
+```
+
+
+
+```{r Streamflow Statistics}
+stats <- tibble(`Source`=c("USGS",
+                           "GEOGLOWS",
+                           "Bias Corrected"),
+                `Mean Flow (cms)`=c(mean(usgs$`Flow (cms)`),
+                                    mean(bias.correction$`Flow (cms)`),
+                                    mean(bias.correction$`Bias Corrected Flow (cms)`)),
+                `Median Flow (cms)`=c(median(usgs$`Flow (cms)`),
+                                      median(bias.correction$`Flow (cms)`),
+                                      median(bias.correction$`Bias Corrected Flow (cms)`)),
+                `Standard Deviation`=c(sd(usgs$`Flow (cms)`),
+                                      sd(bias.correction$`Flow (cms)`),
+                                      sd(bias.correction$`Bias Corrected Flow (cms)`)))
+
+stats <- stats |> 
+  mutate(`Mean Flow (cms)`=round(`Mean Flow (cms)`),
+         `Median Flow (cms)`=round(`Median Flow (cms)`),
+         `Standard Deviation`=round(`Standard Deviation`))
+
+kable(stats)
+
+```
