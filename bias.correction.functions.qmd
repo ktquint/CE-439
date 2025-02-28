@@ -1,0 +1,164 @@
+---
+title: "Bias Correction"
+author: "Kenny Quintana"
+format: html
+editor: visual
+---
+
+## Streamgage Data
+
+```{r Import Libraries, include=FALSE}
+
+library(tidyverse)
+library(fuzzyjoin)
+library(tibble)
+library(knitr)
+
+```
+
+```{r Streamgage Data, echo=FALSE}
+
+read_usgs <- function(usgs.txt){
+  # reads in a usgs.txt file, clears irrelevant data, tidies colnames, and converts flow to cms
+  read_table(usgs.txt) |>
+    select(3:4) |>
+    slice(29:n()) |>
+    rename(Date=1, `Flow (cfs)`=2) |>
+    mutate(Date=as.Date(Date), Year = year(Date), Month = month(Date), Day = day(Date)) |>
+    mutate(`Flow (cms)` = as.numeric(`Flow (cfs)`) / 35.315) |>
+    mutate(Month=factor(Month)) |>
+    drop_na()
+}
+
+read_geoglows <- function(retro.csv){
+  # reads in a geoglows.csv file, tidies colnames, and removes leading zero's from month
+  read_csv(retro.csv) |>
+    rename(`Flow (cms)`=2) |>
+    mutate(Date=as.Date(time)) |>
+    separate(time, into=c("Year", "Month", "Day"), sep = "-") |>
+    mutate(Month=as.numeric(Month)) |>
+    mutate(Month=factor(Month)) |>
+    drop_na()
+}
+
+# test case
+usgs.file <- './yakima.txt'
+geoglows.file <- ('./retrospective_720237537.csv')
+usgs <- read_usgs(usgs.file)
+geoglows <- read_geoglows(geoglows.file)
+
+```
+
+```{r Simulation Data, echo=FALSE}
+
+flow.duration <- function(daily.flows){
+  # splits a tibble of daily flows into a list of tibbles based on month
+  monthly.data <- daily.flows |> 
+    group_by(Month) |> 
+    group_split()
+  # makes an empty dataframe that will be filled with monthly flow-duration curves
+  fdc <- data.frame()
+  for (i in 1:12){
+    monthly.fdc <- monthly.data[[i]] |> 
+      arrange(desc(`Flow (cms)`)) |> 
+      mutate(rank = 1:n()) |> 
+      mutate(EP = round(rank/n() * 100,2))
+    fdc <- fdc |> 
+      bind_rows(monthly.fdc)
+  }
+  # returns a list of fdcs... it will be easier to use the bias.correct function this way
+  fdc |>
+    group_by(Month) |> 
+    group_split()
+}
+
+
+bias.correct <- function(geoglows.data, usgs.data){
+  # make a list of 
+  usgs.fdc <- flow.duration(usgs.data)
+  geoglows.fdc <- flow.duration(geoglows.data)
+  # this data frame will be returned
+  bias.corrected <- data.frame()
+  for (i in 1:12){
+    monthly.bias <- difference_left_join(geoglows.fdc[[i]], usgs.fdc[[i]], by='EP', max_dist=0.03)
+    bias.corrected <- bias.corrected |> 
+      rbind(monthly.bias)
+  }
+  # return this data frame
+  bias.corrected |>
+    select(`Date.x`, `Year.x`, `Month.x`, Day.x, `Flow (cms).x`, `Flow (cms).y`, `EP.y`) |>
+    rename(Date=Date.x, Year=Year.x, Month=Month.x, Day=Day.x,
+           `Flow (cms)`= `Flow (cms).x`, `Bias Corrected Flow (cms)`= `Flow (cms).y`, EP=EP.y) |>
+    distinct(Month, Day, Year, .keep_all = TRUE) |> 
+    arrange(Date)
+}
+
+# these fdcs will be plotted below
+usgs.fdc <- bind_rows(flow.duration(usgs)) 
+geoglows.fdc <- bind_rows(flow.duration(geoglows)) 
+# this bias corrected data will be plotted against the raw usgs data
+bias.correction <- bias.correct(geoglows,usgs)
+
+```
+
+```{r Bias Correction Plots, echo=FALSE}
+
+ggplot() +
+  geom_line(data = bias.correction, aes(x = Date, y = `Flow (cms)`, color = "GEOGLOWS Flow (cms)")) +
+  geom_line(data = bias.correction, aes(x = Date, y = `Bias Corrected Flow (cms)`, color = "Bias Corrected Flow (cms)")) +
+  geom_line(data = usgs, aes(x = Date, y = `Flow (cms)`, color = "USGS Flow (cms)")) +
+  coord_cartesian(ylim = c(0, 800)) + 
+  scale_x_date(limits = as.Date(c("2000-01-01", "2003-12-31")),
+               date_breaks = "1 years", date_labels = "%m-%Y") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(title = "Example Retrospective Data", color = "Data Source") +
+  scale_color_manual(values = c("USGS Flow (cms)" = "blue", "GEOGLOWS Flow (cms)" = "red", "Bias Corrected Flow (cms)" = "green")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+ggplot() +
+  geom_line(data = usgs.fdc, aes(x = EP, y = `Flow (cms)`, color = "USGS")) +
+  geom_line(data = geoglows.fdc, aes(x = EP, y = `Flow (cms)`, color = "GEOGLOWS")) +
+  facet_wrap(~ Month, scales = 'free_y') + # the y-axis on each plot changes with its data
+  labs(x = "Exceedance Probability (%)", y = "Flow (cms)", title = "Monthly Flow Duration Curves", color = "Data Source") +
+  scale_color_manual(values = c("USGS" = "blue", "GEOGLOWS" = "red")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) # centers title
+
+```
+
+```{r Adjust Forecast}
+
+forecast.correction <- function(forecast.csv, bias.correction){
+  read_csv(forecast.csv) |>
+    mutate(Year = year(datetime),
+           Month = month(datetime),
+           Day = day(datetime),
+           Hour = hour(datetime)) |>
+    rename(`Flow (cms)`=flow_median) |>
+    difference_left_join(bias.correction, by=c('Month', 'Flow (cms)'), max_dist=0.43) |>
+    select(Year.x, Month.x, Day.x, Hour,
+           `Flow (cms).x`,
+           `Bias Corrected Flow (cms)`) |>
+    rename(Year=Year.x, Month=Month.x, Day=Day.x,
+           `Flow (cms)`=`Flow (cms).x`) |> 
+    distinct(Month, Day, Hour, .keep_all = TRUE) |> 
+    mutate(datetime=ISOdatetime(Year, Month, Day, Hour, 0, 0))
+  }
+
+# forecast test case
+forecast.file <- ('./forecast_720237537.csv')
+forecast <- forecast.correction(forecast.file, bias.correction)
+
+# plot bias-corrected forecast data vs. ECMWF GEOGLOWS data
+ggplot(data=forecast) +
+  geom_line(mapping=aes(x=datetime, y=`Bias Corrected Flow (cms)`, color='Bias Corrected')) +
+  geom_line(mapping=aes(x=datetime, y=`Flow (cms)`, color = 'GEOGLOWS')) +
+  labs(x = "Date", y = "Flow (cms)", title = "Bias-Corrected Forecast Data", color = "Data Source") +
+  scale_color_manual(values = c("Bias Corrected" = "green", "GEOGLOWS" = "red")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) + # this centers the title
+  ylim(0, NA) # this makes the y-axis start at 0
+
+```
+

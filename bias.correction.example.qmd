@@ -17,10 +17,8 @@ library(knitr)
 ```
 
 ```{r Streamgage Data, echo=FALSE}
-
-usgs.path <- "./yakima.txt"
-
-usgs <- read.table(usgs.path, sep = "\t", header = FALSE) |> 
+# load in in-situ data
+usgs <- read.table("./yakima.txt", sep = "\t", header = FALSE) |> 
   select(V3,V4) |> 
   slice(3:n()) |> 
   rename(Date=V3, `Flow (cfs)`=V4) |>
@@ -29,21 +27,21 @@ usgs <- read.table(usgs.path, sep = "\t", header = FALSE) |>
   mutate(Month=factor(Month)) |> 
   drop_na()
 
-monthly.usgs <- usgs |> 
+monthly.usgs <- usgs |> # this data.frame will be iterated through with the geoglows data
   group_by(Month) |> 
   group_split()
   
 ```
 
 ```{r Simulation Data, echo=FALSE}
-
+# load in GEOGLOWS retrospective data
 monthly.geoglows <- read_csv('./retrospective_720237537.csv') |> 
   rename(`Flow (cms)`=`720237537`) |> 
   mutate(Date=as.Date(time)) |>
   separate(time, into=c("Year", "Month", "Day"), sep = "-") |>
   mutate(Month=as.numeric(Month)) |>
   mutate(Month=factor(Month)) |>
-  drop_na() |> 
+  drop_na() |> # there shouldn't be na, but you can't be too careful
   group_by(Month) |> 
   group_split()
 
@@ -80,40 +78,66 @@ for (i in 1:(length(monthly.usgs))) {
 }
 
 
-
 bias.correction <- bias.correction |>
-  select(`Date.x`, `Year.x`, `Month.x`, Day.x, `Flow (cms)`, `Bias Corrected Flow (cms)`) |>
-  rename(Date=Date.x, Year=Year.x, Month=Month.x, Day=Day.x) |>
+  select(`Date.x`, `Year.x`, `Month.x`, Day.x, `Flow (cms)`, `Bias Corrected Flow (cms)`, `EP.y`) |>
+  rename(Date=Date.x, Year=Year.x, Month=Month.x, Day=Day.x, EP=EP.y) |>
   arrange(Date)
 
 ggplot() +
-  geom_line(data = bias.correction, aes(x = Date, y = `Flow (cms)`, color = "Flow (cms)")) +
+  geom_line(data = bias.correction, aes(x = Date, y = `Flow (cms)`, color = "GEOGLOWS Flow (cms)")) +
   geom_line(data = bias.correction, aes(x = Date, y = `Bias Corrected Flow (cms)`, color = "Bias Corrected Flow (cms)")) +
   geom_line(data = usgs, aes(x = Date, y = `Flow (cms)`, color = "USGS Flow (cms)")) +
-  coord_cartesian(ylim = c(0, 800)) +
+  coord_cartesian(ylim = c(0, 800)) + 
   scale_x_date(limits = as.Date(c("2000-01-01", "2003-12-31")),
                date_breaks = "1 years", date_labels = "%m-%Y") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(color = "Source")
+  labs(title = "Example Retrospective Data", color = "Source") +
+  scale_color_manual(values = c("USGS Flow (cms)" = "blue", "GEOGLOWS Flow (cms)" = "red", "Bias Corrected Flow (cms)" = "green")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5))
 
 ggplot() +
   geom_line(data = usgs.fdc, aes(x = EP, y = `Flow (cms)`, color = "USGS")) +
-  geom_line(data = geoglows.fdc, aes(x = EP, y = `Flow (cms)`, color = "GeoGLOWS")) +
-  facet_wrap(~ Month, scales = 'free_y') +
-  labs(x = "Exceedance Probability (%)", y = "Flow (cms)", title = "Faceted Plot with Two Lines", color = "Source") +
-  scale_color_manual(values = c("USGS" = "green", "GeoGLOWS" = "blue"))
+  geom_line(data = geoglows.fdc, aes(x = EP, y = `Flow (cms)`, color = "GEOGLOWS")) +
+  facet_wrap(~ Month, scales = 'free_y') + # the y-axis on each plot changes with its data
+  labs(x = "Exceedance Probability (%)", y = "Flow (cms)", title = "Monthly Flow Duration Curves", color = "Source") +
+  scale_color_manual(values = c("USGS" = "blue", "GEOGLOWS" = "red")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) # centers title
 
 ```
 
 ```{r Adjust Forecast}
+# make this a numeric so we can do a join
+bias.correction$Month <- as.numeric(bias.correction$Month)
 
-forecast <- read_csv('./forecast_720237537.csv') |>  difference_left_join(forecast, bias.correction, by='EP', max_dist=0.03)
-  
+forecast <- read_csv('./forecast_720237537.csv') |>
+  mutate(Year = year(datetime),
+         Month = month(datetime),
+         Day = day(datetime),
+         Hour = hour(datetime)) |>
+  rename(`Flow (cms)`=flow_median) |>
+  difference_left_join(bias.correction, by=c('Month', 'Flow (cms)'), max_dist=0.43) |>
+  select(Year.x, Month.x, Day.x, Hour,
+         `Flow (cms).x`,
+         `Bias Corrected Flow (cms)`) |>
+  rename(Year=Year.x, Month=Month.x, Day=Day.x,
+         `Flow (cms)`=`Flow (cms).x`) |> 
+  distinct(Month, Day, Hour, .keep_all = TRUE) |> 
+  mutate(datetime=ISOdatetime(Year, Month, Day, Hour, 0, 0))
 
+# check that all the bias corrected flows have values
+print(sum(is.na(forecast$`Bias Corrected Flow (cms)`)))
 
-
-ggplot(forecast) +
-  geom_line(aes(x=datetime, y=flow_median))
+# plot bias-corrected forecast data vs. ECMWF GEOGLOWS data
+ggplot(data=forecast) +
+  geom_line(mapping=aes(x=datetime, y=`Bias Corrected Flow (cms)`, color='Bias Corrected')) +
+  geom_line(mapping=aes(x=datetime, y=`Flow (cms)`, color = 'GEOGLOWS')) +
+  labs(x = "Date", y = "Flow (cms)", title = "Bias-Corrected Forecast Data", color = "Source") +
+  scale_color_manual(values = c("Bias Corrected" = "green", "GEOGLOWS" = "red")) +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5)) + # this centers the title
+  ylim(0, NA) # this makes the y-axis sstart at 0
 
 ```
 
