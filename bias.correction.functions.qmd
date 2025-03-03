@@ -161,4 +161,3 @@ ggplot(data=forecast) +
   ylim(0, NA) # this makes the y-axis start at 0
 
 ```
-
