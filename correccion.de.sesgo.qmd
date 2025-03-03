@@ -139,7 +139,7 @@ ggplot() +
 
 ```{r Corregir el Pronóstico}
 
-forecast.correction <- function(forecast.csv, bias.correction){
+corregir.pronostico <- function(forecast.csv, bias.correction){
   read_csv(forecast.csv) |>
     mutate(Año = year(datetime),
            Mes = month(datetime),
@@ -156,7 +156,7 @@ forecast.correction <- function(forecast.csv, bias.correction){
     mutate(datetime=ISOdatetime(Año, Mes, Día, Hora, 0, 0))
   }
 
-pronostico.corregido <- forecast.correction(archivo.pronostico, correccion.de.sesgo)
+pronostico.corregido <- corregir.pronostico(archivo.pronostico, correccion.de.sesgo)
 
 # una gráfica del pronóstico corregido y los caudales de GEOGLOWS
 ggplot(data=pronostico.corregido) +

@@ -141,8 +141,6 @@ ggplot(data=forecast) +
 
 ```
 
-
-
 ```{r Streamflow Statistics}
 stats <- tibble(`Source`=c("USGS",
                            "GEOGLOWS",
