@@ -7,7 +7,7 @@ editor: visual
 
 
 
-```{r Import Libraries, include=FALSE}
+```{r Importar las Bibliotecas, include=FALSE}
 
 library(tidyverse)
 library(fuzzyjoin)
@@ -16,7 +16,7 @@ library(knitr)
 
 ```
 
-```{r Leer los Archivos}
+```{r Leer los Nombres de los Archivos}
 # el formato de los archivos de geoglows es csv
 archivos.csv <- list.files(pattern = "\\.csv$")
 archivo.retrospectivo <- paste('./', archivos.csv[2], sep="")
@@ -29,7 +29,7 @@ archivo.usgs <- paste('./', archivos.txt[1], sep="")
 ```
 
 
-```{r Streamgage Data, echo=FALSE}
+```{r Funciones para Leer Datos, echo=FALSE}
 
 leer_usgs <- function(usgs.txt){
   # lee un archivo de usgs, borra datos irrelevantes, cambia los nombres, y adjusta el caudal a m^3/s
@@ -58,7 +58,7 @@ geoglows <- leer_geoglows(archivo.retrospectivo)
 
 ```
 
-```{r Simulation Data, echo=FALSE}
+```{r Corrección de caudales retrospectivos, echo=FALSE}
 
 duracion.caudal <- function(daily.flows){
   # splits a tibble of daily flows into a list of tibbles based on month
@@ -109,8 +109,9 @@ correccion.de.sesgo <- corregir.sesgo(geoglows,usgs)
 
 ```
 
-```{r Bias Correction Plots, echo=FALSE}
+```{r Gráficos, echo=FALSE}
 
+# una gráfica de los caudales de usgs, geoglows, y la corrección de sesgo
 ggplot() +
   geom_line(data = correccion.de.sesgo, aes(x = Fecha, y = `Caudal (m^3/s)`, color = "GEOGLOWS")) +
   geom_line(data = correccion.de.sesgo, aes(x = Fecha, y = `Caudal Corregido (m^3/s)`, color = "Corrección de Sesgo")) +
@@ -119,23 +120,24 @@ ggplot() +
   scale_x_date(limits = as.Date(c("2000-01-01", "2003-12-31")),
                date_breaks = "1 years", date_labels = "%m-%Y") +
   theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
-  labs(title = "Corrección de Caudales Retrospectivos", color = "Fuente de Datos") +
+  labs(title = "Corrección de Caudales Retrospectivos", color = "Fuente de Datos", y = expression(paste("Caudal (m"^3,"/s)"))) +
   scale_color_manual(values = c("USGS" = "blue", "GEOGLOWS" = "red", "Corrección de Sesgo" = "green")) +
   theme_bw() +
   theme(plot.title = element_text(hjust = 0.5))
 
+# una gráfica de las curvas de duración de caudales
 ggplot() +
   geom_line(data = usgs.cdc, aes(x = P.exc, y = `Caudal (m^3/s)`, color = "USGS")) +
   geom_line(data = geoglows.cdc, aes(x = P.exc, y = `Caudal (m^3/s)`, color = "GEOGLOWS")) +
-  facet_wrap(~ Mes, scales = 'free_y') + # the y-axis on each plot changes with its data
+  facet_wrap(~ Mes, scales = 'free_y') +
   labs(x = "Probabilidad de Excedencia (%)", y = expression(paste("Caudal (m"^3,"/s)")), title = "Curvas de Duración de Caudal", color = "Fuente de Datos") +
   scale_color_manual(values = c("USGS" = "blue", "GEOGLOWS" = "red")) +
   theme_bw() +
-  theme(plot.title = element_text(hjust = 0.5)) # centers title
+  theme(plot.title = element_text(hjust = 0.5))
 
 ```
 
-```{r Adjust Forecast}
+```{r Corregir el Pronóstico}
 
 forecast.correction <- function(forecast.csv, bias.correction){
   read_csv(forecast.csv) |>
@@ -154,18 +156,16 @@ forecast.correction <- function(forecast.csv, bias.correction){
     mutate(datetime=ISOdatetime(Año, Mes, Día, Hora, 0, 0))
   }
 
-# forecast test case
-forecast.file <- ('./forecast_720237537.csv')
-forecast <- forecast.correction(forecast.file, correccion.de.sesgo)
+pronostico.corregido <- forecast.correction(archivo.pronostico, correccion.de.sesgo)
 
-# plot bias-corrected forecast data vs. ECMWF GEOGLOWS data
-ggplot(data=forecast) +
+# una gráfica del pronóstico corregido y los caudales de GEOGLOWS
+ggplot(data=pronostico.corregido) +
   geom_line(mapping=aes(x=datetime, y=`Caudal Corregido (m^3/s)`, color='Corrección de Sesgo')) +
   geom_line(mapping=aes(x=datetime, y=`Caudal (m^3/s)`, color = 'GEOGLOWS')) +
-  labs(x = "Fecha", y = "Flow (cms)", title = "Caudales Pronósticos Corregidos", color = "Fuente de Datos") +
+  labs(x = "Fecha", y = expression(paste("Caudal (m"^3,"/s)")), title = "Caudales Pronósticos Corregidos", color = "Fuente de Datos") +
   scale_color_manual(values = c("Corrección de Sesgo" = "green", "GEOGLOWS" = "red")) +
   theme_bw() +
-  theme(plot.title = element_text(hjust = 0.5)) + # this centers the title
-  ylim(0, NA) # this makes the y-axis start at 0
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(0, NA)
 
 ```
